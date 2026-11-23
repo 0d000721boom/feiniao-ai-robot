@@ -1,0 +1,57 @@
+
+spring:
+  datasource:
+#    driver-class-name: org.postgresql.Driver # 数据库驱动类名
+#    url: jdbc:postgresql://localhost:5432/robot # 数据库连接 URL
+    driver-class-name: com.p6spy.engine.spy.P6SpyDriver # 数据库驱动类名
+    url: jdbc:p6spy:postgresql://localhost:5432/robot # 数据库连接 URL
+    username: postgres # 数据库用户名
+    password: postgres # 数据库密码
+    hikari: # HikariCP 连接池配置
+      pool-name: AI-Robot-HikariCP # 自定义连接池名称
+      auto-commit: true # 是否自动提交事务
+      connection-timeout: 30000 # 连接超时时间（毫秒）
+      idle-timeout: 600000 # 空闲连接存活最大时间（毫秒）
+      max-lifetime: 1800000 # 连接最大存活时间（毫秒）
+      minimum-idle: 5 # 最小空闲连接数
+      maximum-pool-size: 20 # 最大连接池大小
+      connection-test-query: SELECT 1 # 连接测试查询
+      validation-timeout: 5000 # 验证连接的有效性
+
+
+  ai:
+    openai:
+      base-url: https://dashscope.aliyuncs.com/compatible-mode/v1 # 阿里云百炼公共兼容模式地址；
+      api-key: ${CLIOPAI_API_KEY:} # 通过环境变量 CLIOPAI_API_KEY 配置
+      chat:
+        model: qwen3-omni-flash # 模型名称
+        temperature: 0.7 # 温度值
+      embedding:
+        model: text-embedding-v4 # 向量化模型
+        dimensions: 1536 # 维度
+    vectorstore:
+      pgvector:
+        index-type: HNSW # 索引类型
+        distance-type: COSINE_DISTANCE # 距离类型
+        dimensions: 1536 # 嵌入维度
+        max-document-batch-size: 10000 # 每批处理的最大文档数
+        table-name: t_vector_store # 向量表名称
+
+customer-service:
+  md-storage-path: D:/workspaces/resources # Markdown 问答文件存储路径
+  model: qwen3-omni-flash
+  temperature: 0.7
+
+okhttp:
+  connect-timeout: 5000
+  read-timeout: 30000
+  write-timeout: 15000
+  max-idle-connections: 50
+  keep-alive-duration: 5
+
+searxng:
+  url: http://localhost:8888/search
+  count: 10
+
+
+

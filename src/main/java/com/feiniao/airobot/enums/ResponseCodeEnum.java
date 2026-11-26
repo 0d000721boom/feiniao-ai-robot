@@ -23,6 +23,14 @@ public enum ResponseCodeEnum implements BaseExceptionInterface {
     UPLOAD_FILE_FAILED("20003", "文件上传失败"),
     MARKDOWN_FILE_NOT_FOUND("20004", "Markdown 问答文件不存在"),
     MARKDOWN_FILE_CANT_DELETE("20005", "正在处理中的 Markdown 问答文件，不允许删除"),
+    FILE_MD5_INVALID("20006", "文件 MD5 不合法"),
+    FILE_NAME_INVALID("20007", "文件名称不合法，仅支持 Markdown 文件"),
+    CHUNK_PARAM_INVALID("20008", "文件分片参数不合法"),
+    CHUNK_METADATA_MISMATCH("20009", "文件分片元数据不一致"),
+    CHUNK_INCOMPLETE("20010", "文件分片不完整，请继续上传"),
+    FILE_MERGE_IN_PROGRESS("20011", "文件正在合并，请稍后重试"),
+    FILE_MD5_MISMATCH("20012", "合并后的文件 MD5 校验失败"),
+    FILE_UPLOAD_RECORD_NOT_FOUND("20013", "文件上传记录不存在"),
     ;
 
     // 异常码

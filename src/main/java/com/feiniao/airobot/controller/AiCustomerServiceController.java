@@ -48,14 +48,45 @@ public class AiCustomerServiceController {
     private Double temperature;
 
 
-    /**
-     * 问答 MD 文件上传
-     * @param file
-     * @return
-     */
-    @PostMapping(value = "/md/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    public Response<?> uploadMarkdownFile(@RequestPart(value = "file", required = false) MultipartFile file) {
-        return customerService.uploadMarkdownFile(file);
+//    /**
+//     * 问答 MD 文件上传
+//     * @param file
+//     * @return
+//     */
+//    @PostMapping(value = "/md/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+//    public Response<?> uploadMarkdownFile(@RequestPart(value = "file", required = false) MultipartFile file) {
+//        return customerService.uploadMarkdownFile(file);
+//    }
+
+    @PostMapping("/file/check")
+    @ApiOperationLog(description = "检查文件是否存在")
+    public Response<CheckFileRspVO> checkFile(@RequestBody @Validated CheckFileReqVO checkFileReqVO) {
+        return customerService.checkFile(checkFileReqVO);
+    }
+
+    @PostMapping(value = "/file/chunk/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @ApiOperationLog(description = "上传文件分片")
+    public Response<?> uploadChunk(
+            @RequestPart("file") MultipartFile file,
+            @RequestParam String fileMd5,
+            @RequestParam String fileName,
+            @RequestParam Long fileSize,
+            @RequestParam Integer chunkNumber,
+            @RequestParam Integer totalChunks) {
+        return customerService.uploadChunk(UploadChunkReqVO.builder()
+                .fileMd5(fileMd5)
+                .fileName(fileName)
+                .fileSize(fileSize)
+                .chunkNumber(chunkNumber)
+                .totalChunks(totalChunks)
+                .chunk(file)
+                .build());
+    }
+
+    @PostMapping("/file/merge")
+    @ApiOperationLog(description = "合并文件分片")
+    public Response<?> mergeFile(@RequestBody @Validated MergeFileReqVO request) {
+        return customerService.mergeFile(request);
     }
 
     @PostMapping("/md/delete")

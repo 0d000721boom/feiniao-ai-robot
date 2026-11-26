@@ -21,8 +21,8 @@ import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.FilenameUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.ai.vectorstore.VectorStore;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
@@ -34,7 +34,6 @@ import java.nio.file.Paths;
 import java.time.LocalDateTime;
 import java.util.*;
 import java.util.regex.Pattern;
-import java.util.stream.Collectors;
 
 /**
  * @Description: AI 客服
@@ -44,9 +43,6 @@ import java.util.stream.Collectors;
 public class CustomerServiceImpl  implements CustomerService {
     private static final long CHUNK_SIZE = 5L * 1024 * 1024;
     private static final Pattern MD5_PATTERN = Pattern.compile("^[0-9a-fA-F]{32}$");
-
-    @Value("${customer-service.md-storage-path}")
-    private String mdStoragePath;
 
     @Resource
     private AiCustomerServiceFileStorageMapper aiCustomerServiceFileStorageMapper;
@@ -62,71 +58,6 @@ public class CustomerServiceImpl  implements CustomerService {
 
     @Resource
     private LocalFileChunkStorage chunkStorage;
-
-//    @Override
-//    public Response<?> uploadMarkdownFile(MultipartFile file) {
-//        // 校验文件不能为空
-//        if (file == null || file.isEmpty()) {
-//            throw new BizException(ResponseCodeEnum.UPLOAD_FILE_CANT_EMPTY);
-//        }
-//
-//        // 仅保留文件名本身，防止目录穿越到配置的存储目录之外。
-//        String fileMd5 = StringUtils.trimToEmpty(
-//                FilenameUtils.getName(file.getOriginalFilename()));
-//
-//        // 验证文件类型，仅支持 Markdown
-//        if (StringUtils.isBlank(fileMd5) || !isMarkdownFile(fileMd5)) {
-//            throw new BizException(ResponseCodeEnum.ONLY_SUPPORT_MARKDOWN);
-//        }
-//
-//        try {
-//            // 重新生成文件名 (防止文件名冲突导致覆盖)
-//            String fileName = UUID.randomUUID().toString() + "-" + fileMd5;
-//
-//            // 构建存储路径
-//            Path storageDirectory = Paths.get(mdStoragePath);
-//            Path targetPath = storageDirectory.resolve(fileName);
-//
-//            // 确保目录存在
-//            Files.createDirectories(storageDirectory);
-//
-//            // 保存文件
-//            file.transferTo(targetPath);
-//
-//            // 记录操作日志
-//            log.info("## Markdown 问答文件存储成功, 文件名：{} -> 存储路径：{}", fileMd5, targetPath);
-//
-//            // 存储入库
-//            AiCustomerServiceFileStorageDO storage = AiCustomerServiceFileStorageDO.builder()
-//                    .fileMd5(fileMd5)
-//                    .fileName(fileName)
-//                    .filePath(targetPath.toString())
-//                    .fileSize(file.getSize())
-//                    .status(AiCustomerServiceFileStatusEnum.PENDING.getCode())
-//                    .createTime(LocalDateTime.now())
-//                    .updateTime(LocalDateTime.now())
-//                    .build();
-//            if (aiCustomerServiceFileStorageMapper.insert(storage) != 1) {
-//                throw new BizException(ResponseCodeEnum.UPLOAD_FILE_FAILED);
-//            }
-//
-//            // 上传接口只负责落库，向量化由异步事件监听器完成。
-//            applicationEventPublisher.publishEvent(AiCustomerServiceMdUploadedEvent.builder()
-//                    .id(storage.getId())
-//                    .filePath(targetPath.toString())
-//                    .metadatas(Map.of(
-//                            "mdStorageId", storage.getId(),
-//                            "fileMd5", fileMd5
-//                    ))
-//                    .build());
-//
-//            return Response.success();
-//
-//        } catch (IOException e) {
-//            log.error("## Markdown 问答文件上传失败：{}", fileMd5, e);
-//            throw new BizException(ResponseCodeEnum.UPLOAD_FILE_FAILED);
-//        }
-//    }
 
     /**
      * 检查文件是否存在
@@ -193,10 +124,18 @@ public class CustomerServiceImpl  implements CustomerService {
                     .createTime(LocalDateTime.now())
                     .updateTime(LocalDateTime.now())
                     .build();
-            if (aiCustomerServiceFileStorageMapper.insert(storage) != 1) {
-                throw new BizException(ResponseCodeEnum.UPLOAD_FILE_FAILED);
+            try {
+                if (aiCustomerServiceFileStorageMapper.insert(storage) != 1) {
+                    throw new BizException(ResponseCodeEnum.UPLOAD_FILE_FAILED);
+                }
+            } catch (DuplicateKeyException e) {
+                storage = aiCustomerServiceFileStorageMapper.selectByMd5(fileMd5);
+                if (storage == null) {
+                    throw new BizException(ResponseCodeEnum.UPLOAD_FILE_FAILED);
+                }
             }
-        } else {
+        }
+        if (storage != null) {
             if (AiCustomerServiceFileStatusEnum.FAILED.getCode().equals(storage.getStatus())
                     || AiCustomerServiceFileStatusEnum.PENDING.getCode().equals(storage.getStatus())
                     || AiCustomerServiceFileStatusEnum.VECTORIZING.getCode().equals(storage.getStatus())

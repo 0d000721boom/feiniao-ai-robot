@@ -147,6 +147,7 @@ public class ChatHistoryServiceImpl implements ChatHistoryService {
                 .chatUuid(message.getChatUuid())
                 .role(message.getRole())
                 .content(message.getContent())
+                .reasoning(message.getReasoningContent())
                 .createTime(message.getCreateTime())
                 .build();
     }

@@ -91,6 +91,7 @@ class ChatHistoryServiceImplTest {
                 .chatUuid(chat.getUuid())
                 .role("assistant")
                 .content("较新的消息")
+                .reasoningContent("较新的思考过程")
                 .createTime(LocalDateTime.of(2026, 11, 18, 21, 0))
                 .build();
         ChatMessageDO olderMessage = ChatMessageDO.builder()
@@ -111,6 +112,10 @@ class ChatHistoryServiceImplTest {
 
         assertEquals(olderMessage.getId(), result.getRecords().get(0).getId());
         assertEquals(newerMessage.getId(), result.getRecords().get(1).getId());
+        assertEquals(
+                newerMessage.getReasoningContent(),
+                result.getRecords().get(1).getReasoning()
+        );
     }
 
     @Test

@@ -29,6 +29,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.mock.web.MockMultipartFile;
 
 import java.nio.file.Path;
@@ -161,6 +162,26 @@ class CustomerServiceImplTest {
         assertTrue(response.isSuccess());
         verify(chunkStorage, never()).saveChunk(any(), anyInt(), any());
         verify(chunkMapper, never()).insert(any(FileChunkInfoDO.class));
+    }
+
+    @Test
+    void concurrentFirstChunkReusesRecordCreatedByAnotherRequest() {
+        String md5 = "0123456789abcdef0123456789abcdef";
+        when(storageMapper.selectByMd5(md5)).thenReturn(null, uploadingStorage(md5));
+        when(storageMapper.insert(any(AiCustomerServiceFileStorageDO.class)))
+                .thenThrow(new DuplicateKeyException("duplicate file record"));
+        when(chunkMapper.selectByFileMd5AndChunkNumber(md5, 1)).thenReturn(null);
+        when(chunkMapper.insert(any(FileChunkInfoDO.class))).thenReturn(1);
+        when(chunkMapper.selectChunkedList(md5)).thenReturn(List.of(
+                FileChunkInfoDO.builder().fileMd5(md5).chunkNumber(1).build()));
+        when(chunkStorage.getChunkPath(md5, 1))
+                .thenReturn(storageDirectory.resolve("1.part"));
+        when(storageMapper.updateById(any(AiCustomerServiceFileStorageDO.class))).thenReturn(1);
+
+        Response<?> response = service.uploadChunk(uploadRequest(md5, 1));
+
+        assertTrue(response.isSuccess());
+        verify(chunkStorage).saveChunk(eq(md5), eq(1), any());
     }
 
     @Test

@@ -20,5 +20,6 @@ public class ChatMessageRspVO {
     private String chatUuid;
     private String role;
     private String content;
+    private String reasoning;
     private LocalDateTime createTime;
 }

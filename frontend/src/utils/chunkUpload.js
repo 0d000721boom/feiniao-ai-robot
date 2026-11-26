@@ -6,6 +6,11 @@ export function getChunkCount(fileSize) {
   return Math.ceil(fileSize / CHUNK_SIZE)
 }
 
+export function createChunkBlob(file, chunkNumber, chunkSize = CHUNK_SIZE) {
+  const start = chunkNumber * chunkSize
+  return file.slice(start, Math.min(file.size, start + chunkSize))
+}
+
 export function getMissingChunkNumbers(totalChunks, uploadedChunks = []) {
   const uploaded = new Set(uploadedChunks.map(Number))
   return Array.from({ length: Math.max(0, Number(totalChunks) || 0) }, (_, index) => index)
@@ -54,8 +59,15 @@ export function createUploadProgress() {
   }
 
   return {
-    setStage(stage, percent = 0, completedChunks = 0, totalChunks = 0) {
-      Object.assign(state, { stage, percent, completedChunks, totalChunks })
+    setStage(stage, percent, completedChunks, totalChunks) {
+      state.stage = stage
+      if (stage === 'merging') {
+        state.percent = 100
+      } else if (percent !== undefined) {
+        state.percent = percent
+      }
+      if (completedChunks !== undefined) state.completedChunks = completedChunks
+      if (totalChunks !== undefined) state.totalChunks = totalChunks
     },
     snapshot() {
       return { ...state }

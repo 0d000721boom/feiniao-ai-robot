@@ -109,6 +109,24 @@
       </div>
     </div>
 
+    <div
+      v-if="uploadProgress.stage !== 'idle'"
+      class="mb-4 rounded-xl border border-blue-100 bg-white px-4 py-3"
+    >
+      <div class="mb-2 flex items-center justify-between gap-4 text-xs text-gray-500">
+        <span>{{ uploadStageText }}</span>
+        <span>{{ uploadProgress.percent }}%</span>
+      </div>
+      <a-progress
+        :percent="uploadProgress.percent"
+        :show-info="false"
+        :status="uploadProgress.stage === 'failed'
+          ? 'exception'
+          : uploadProgress.stage === 'completed' ? 'success' : 'active'"
+        size="small"
+      />
+    </div>
+
     <input
       ref="fileInput"
       class="hidden"
@@ -235,16 +253,30 @@ import LoadingDots from '@/components/LoadingDots.vue'
 import StreamMarkdownRender from '@/components/StreamMarkdownRender.vue'
 import SvgIcon from '@/components/SvgIcon.vue'
 import {
+  checkFile,
   deleteMarkdownFile,
   findMarkdownFilePageList,
+  mergeFile,
   updateMarkdownFile,
-  uploadMarkdownFile,
+  uploadFileChunk,
 } from '@/api/customerService'
 import {
   buildCustomerServiceChatUrl,
   consumeCustomerServiceStream,
 } from '@/utils/customerServiceStream'
 import { normalizeMarkdownFilePage } from '@/utils/markdownFilePage'
+import {
+  CHUNK_SIZE,
+  MAX_CONCURRENT_UPLOADS,
+  calculateUploadPercent,
+  createChunkBlob,
+  createUploadProgress,
+  getChunkCount,
+  getMissingChunkNumbers,
+  runWithConcurrency,
+  withRetries,
+} from '@/utils/chunkUpload'
+import { calculateFileMd5 } from '@/utils/fileMd5'
 
 const router = useRouter()
 const chatContainer = ref(null)
@@ -346,6 +378,8 @@ const fileInput = ref(null)
 const dataSource = ref([])
 const fileLoading = ref(false)
 const uploadLoading = ref(false)
+const uploadProgress = reactive(createUploadProgress().snapshot())
+const progressSession = createUploadProgress()
 const editLoading = ref(false)
 const deleteLoading = ref(false)
 const current = ref(1)
@@ -386,15 +420,33 @@ const pagination = computed(() => ({
 
 const statusMeta = (status) => {
   const statusMap = {
-    0: { label: '待处理', color: 'default' },
-    1: { label: '向量化中', color: 'processing' },
-    2: { label: '已完成', color: 'success' },
-    3: { label: '失败', color: 'error' },
+    0: { label: '上传中', color: 'default' },
+    1: { label: '待处理', color: 'processing' },
+    2: { label: '向量化中', color: 'processing' },
+    3: { label: '已完成', color: 'success' },
+    4: { label: '失败', color: 'error' },
+    5: { label: '合并中', color: 'processing' },
   }
   return statusMap[status] || { label: '未知', color: 'default' }
 }
 
-const canDelete = (record) => record.status === 2 || record.status === 3
+const canDelete = (record) => record.status === 3 || record.status === 4
+
+const uploadStageText = computed(() => {
+  const stageText = {
+    hashing: `正在计算文件 MD5 ${uploadProgress.percent}%`,
+    uploading: `正在上传分片 ${uploadProgress.completedChunks} / ${uploadProgress.totalChunks}`,
+    merging: '正在合并文件',
+    completed: '上传完成，文件正在进入处理队列',
+    failed: '上传失败，可重新选择文件续传',
+  }
+  return stageText[uploadProgress.stage] || ''
+})
+
+const syncUploadProgress = (...args) => {
+  progressSession.setStage(...args)
+  Object.assign(uploadProgress, progressSession.snapshot())
+}
 
 const formatDateTime = (value) => {
   if (!value) return '-'
@@ -438,6 +490,7 @@ const onSettingsDrawerClose = () => {
 }
 
 const triggerFileUpload = () => {
+  if (uploadLoading.value) return
   fileInput.value?.click()
 }
 
@@ -450,21 +503,80 @@ const handleFileSelect = async (event) => {
     message.warning('请选择 Markdown 文件')
     return
   }
+  if (file.size === 0) {
+    message.warning('不能上传空文件')
+    return
+  }
 
-  const formData = new FormData()
-  formData.append('file', file)
   uploadLoading.value = true
+  syncUploadProgress('hashing', 0)
 
   try {
-    const response = await uploadMarkdownFile(formData)
-    if (!response.data.success) {
-      message.warning(getBusinessMessage(response, '上传失败'))
+    const fileMd5 = await calculateFileMd5(file, (percent) => {
+      syncUploadProgress('hashing', percent)
+    })
+    const checkResponse = await checkFile(fileMd5)
+    if (checkResponse.data?.success === false) {
+      message.warning(getBusinessMessage(checkResponse, '检查文件失败'))
       return
     }
 
+    const checkResult = checkResponse.data?.data || {}
+    if (checkResult.exists && !checkResult.needUpload) {
+      syncUploadProgress('completed', 100)
+      message.success('文件已存在，无需重复上传')
+      await loadFiles(1)
+      return
+    }
+
+    const totalChunks = getChunkCount(file.size)
+    const missingChunks = getMissingChunkNumbers(totalChunks, checkResult.uploadedChunks)
+    let completedChunks = 0
+    syncUploadProgress('uploading', 0, 0, totalChunks)
+
+    await runWithConcurrency(
+      missingChunks,
+      MAX_CONCURRENT_UPLOADS,
+      async (chunkNumber) => {
+        const formData = new FormData()
+        formData.append('file', createChunkBlob(file, chunkNumber, CHUNK_SIZE), file.name)
+        formData.append('fileMd5', fileMd5)
+        formData.append('fileName', file.name)
+        formData.append('fileSize', String(file.size))
+        formData.append('chunkNumber', String(chunkNumber))
+        formData.append('totalChunks', String(totalChunks))
+
+        const response = await withRetries(
+          () => uploadFileChunk(formData),
+          2,
+        )
+        if (response.data?.success === false) {
+          throw new Error(getBusinessMessage(response, '分片上传失败'))
+        }
+      },
+      () => {
+        completedChunks += 1
+        syncUploadProgress(
+          'uploading',
+          calculateUploadPercent(completedChunks, totalChunks),
+          completedChunks,
+          totalChunks,
+        )
+      },
+    )
+
+    syncUploadProgress('merging', 100, totalChunks, totalChunks)
+    const mergeResponse = await mergeFile(fileMd5)
+    if (mergeResponse.data?.success === false) {
+      message.warning(getBusinessMessage(mergeResponse, '文件合并失败'))
+      return
+    }
+
+    syncUploadProgress('completed', 100, totalChunks, totalChunks)
     message.success('上传成功，文件正在进入处理队列')
     await loadFiles(1)
   } catch (error) {
+    syncUploadProgress('failed', uploadProgress.percent)
     message.error(getRequestErrorMessage(error) || '上传失败')
   } finally {
     uploadLoading.value = false

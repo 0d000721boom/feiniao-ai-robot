@@ -10,6 +10,9 @@ import com.feiniao.airobot.enums.ResponseCodeEnum;
 import com.feiniao.airobot.event.AiCustomerServiceMdUploadedEvent;
 import com.feiniao.airobot.exception.BizException;
 import com.feiniao.airobot.model.vo.chat.PageRspVO;
+import com.feiniao.airobot.model.vo.customerService.CheckFileReqVO;
+import com.feiniao.airobot.model.vo.customerService.CheckFileRspVO;
+import com.feiniao.airobot.model.vo.customerService.DeleteMarkdownFileReqVO;
 import com.feiniao.airobot.model.vo.customerService.FindMarkdownFilePageListReqVO;
 import com.feiniao.airobot.model.vo.customerService.FindMarkdownFilePageListRspVO;
 import com.feiniao.airobot.model.vo.customerService.MergeFileReqVO;
@@ -29,12 +32,14 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.mock.web.MockMultipartFile;
 
 import java.nio.file.Path;
+import java.nio.file.Files;
 import java.time.LocalDateTime;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.argThat;
@@ -195,6 +200,41 @@ class CustomerServiceImplTest {
                 argThat((AiCustomerServiceMdUploadedEvent event) ->
                         event.getId().equals(41L)
                                 && event.getFilePath().equals(finalPath.toString())));
+    }
+
+    @Test
+    void checkFileDoesNotRequestChunksWhileMerging() {
+        String md5 = "0123456789abcdef0123456789abcdef";
+        when(storageMapper.selectByMd5(md5)).thenReturn(
+                AiCustomerServiceFileStorageDO.builder()
+                        .fileMd5(md5)
+                        .status(AiCustomerServiceFileStatusEnum.MERGING.getCode())
+                        .build());
+
+        Response<CheckFileRspVO> response = service.checkFile(
+                CheckFileReqVO.builder().fileMd5(md5).build());
+
+        assertTrue(response.getData().getExists());
+        assertFalse(response.getData().getNeedUpload());
+    }
+
+    @Test
+    void deletingFileAlsoDeletesRemainingChunks() throws Exception {
+        String md5 = "0123456789abcdef0123456789abcdef";
+        Path finalFile = Files.writeString(storageDirectory.resolve("guide.md"), "# guide");
+        AiCustomerServiceFileStorageDO storage = AiCustomerServiceFileStorageDO.builder()
+                .id(41L)
+                .fileMd5(md5)
+                .filePath(finalFile.toString())
+                .status(AiCustomerServiceFileStatusEnum.COMPLETED.getCode())
+                .build();
+        when(storageMapper.selectById(41L)).thenReturn(storage);
+
+        service.deleteMarkdownFile(DeleteMarkdownFileReqVO.builder().id(41L).build());
+
+        verify(chunkMapper).deleteByFileMd5(md5);
+        verify(chunkStorage).deleteChunks(md5);
+        assertFalse(Files.exists(finalFile));
     }
 
     private UploadChunkReqVO uploadRequest(String md5, int chunkNumber) {

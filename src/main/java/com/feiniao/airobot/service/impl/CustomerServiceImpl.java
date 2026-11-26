@@ -421,6 +421,14 @@ public class CustomerServiceImpl  implements CustomerService {
         // 删除文件表记录
         aiCustomerServiceFileStorageMapper.deleteById(id);
 
+        // 清理可能残留的分片记录和分片文件
+        try {
+            fileChunkInfoMapper.deleteByFileMd5(AiCustomerServiceFileStorageDO.getFileMd5());
+            chunkStorage.deleteChunks(AiCustomerServiceFileStorageDO.getFileMd5());
+        } catch (RuntimeException e) {
+            log.warn("## 文件分片清理失败: {}", AiCustomerServiceFileStorageDO.getFileMd5(), e);
+        }
+
         // 删除向量化数据
         vectorStore.delete(String.format("mdStorageId == %s", id));
 

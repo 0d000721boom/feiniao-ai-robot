@@ -1,9 +1,9 @@
 package com.feiniao.airobot.event.listener;
 
 import com.google.common.collect.Lists;
-import com.feiniao.airobot.domain.dos.AiCustomerServiceMdStorageDO;
-import com.feiniao.airobot.domain.mapper.AiCustomerServiceMdStorageMapper;
-import com.feiniao.airobot.enums.AiCustomerServiceMdStatusEnum;
+import com.feiniao.airobot.domain.dos.AiCustomerServiceFileStorageDO;
+import com.feiniao.airobot.domain.mapper.AiCustomerServiceFileStorageMapper;
+import com.feiniao.airobot.enums.AiCustomerServiceFileStatusEnum;
 import com.feiniao.airobot.event.AiCustomerServiceMdUploadedEvent;
 import com.feiniao.airobot.reader.MarkdownReader;
 import jakarta.annotation.Resource;
@@ -12,10 +12,11 @@ import org.springframework.ai.document.Document;
 import org.springframework.ai.document.id.IdGenerator;
 import org.springframework.ai.document.id.JdkSha256HexIdGenerator;
 import org.springframework.ai.vectorstore.VectorStore;
-import org.springframework.context.event.EventListener;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.event.TransactionPhase;
+import org.springframework.transaction.event.TransactionalEventListener;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.LocalDateTime;
@@ -34,7 +35,7 @@ public class AiCustomerServiceMdUploadedListener {
     @Resource
     private VectorStore vectorStore;
     @Resource
-    private AiCustomerServiceMdStorageMapper aiCustomerServiceMdStorageMapper;
+    private AiCustomerServiceFileStorageMapper aiCustomerServiceFileStorageMapper;
     @Resource
     private TransactionTemplate transactionTemplate;
 
@@ -42,7 +43,7 @@ public class AiCustomerServiceMdUploadedListener {
      * Markdown 文件向量化
      * @param event
      */
-    @EventListener
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
     @Async("eventTaskExecutor") // 指定使用我们自定义的线程池
     public void vectorizing(AiCustomerServiceMdUploadedEvent event) {
         log.info("## AiCustomerServiceMdUploadedEvent: {}", event);
@@ -55,9 +56,9 @@ public class AiCustomerServiceMdUploadedListener {
         Map<String, Object> metadatas = event.getMetadatas();
 
         // 更新存储文件的处理状态为 “向量化中”
-        aiCustomerServiceMdStorageMapper.updateById(AiCustomerServiceMdStorageDO.builder()
+        aiCustomerServiceFileStorageMapper.updateById(AiCustomerServiceFileStorageDO.builder()
                 .id(id)
-                .status(AiCustomerServiceMdStatusEnum.VECTORIZING.getCode())
+                .status(AiCustomerServiceFileStatusEnum.VECTORIZING.getCode())
                 .updateTime(LocalDateTime.now())
                 .build());
 
@@ -94,9 +95,9 @@ public class AiCustomerServiceMdUploadedListener {
                 }
 
                 // 更新存储文件的处理状态为 “已完成”
-                aiCustomerServiceMdStorageMapper.updateById(AiCustomerServiceMdStorageDO.builder()
+                aiCustomerServiceFileStorageMapper.updateById(AiCustomerServiceFileStorageDO.builder()
                         .id(id)
-                        .status(AiCustomerServiceMdStatusEnum.COMPLETED.getCode())
+                        .status(AiCustomerServiceFileStatusEnum.COMPLETED.getCode())
                         .updateTime(LocalDateTime.now())
                         .build());
 
@@ -110,9 +111,9 @@ public class AiCustomerServiceMdUploadedListener {
 
         // 若事务执行失败，更新存储文件的处理状态为 “失败”
         if (!isSuccess) {
-            aiCustomerServiceMdStorageMapper.updateById(AiCustomerServiceMdStorageDO.builder()
+            aiCustomerServiceFileStorageMapper.updateById(AiCustomerServiceFileStorageDO.builder()
                     .id(id)
-                    .status(AiCustomerServiceMdStatusEnum.FAILED.getCode())
+                    .status(AiCustomerServiceFileStatusEnum.FAILED.getCode())
                     .updateTime(LocalDateTime.now())
                     .build());
         }

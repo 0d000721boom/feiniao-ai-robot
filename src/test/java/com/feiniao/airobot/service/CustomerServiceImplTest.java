@@ -6,10 +6,13 @@ import com.feiniao.airobot.domain.dos.FileChunkInfoDO;
 import com.feiniao.airobot.domain.mapper.AiCustomerServiceFileStorageMapper;
 import com.feiniao.airobot.domain.mapper.FileChunkInfoMapper;
 import com.feiniao.airobot.enums.AiCustomerServiceFileStatusEnum;
+import com.feiniao.airobot.enums.ResponseCodeEnum;
 import com.feiniao.airobot.event.AiCustomerServiceMdUploadedEvent;
+import com.feiniao.airobot.exception.BizException;
 import com.feiniao.airobot.model.vo.chat.PageRspVO;
 import com.feiniao.airobot.model.vo.customerService.FindMarkdownFilePageListReqVO;
 import com.feiniao.airobot.model.vo.customerService.FindMarkdownFilePageListRspVO;
+import com.feiniao.airobot.model.vo.customerService.MergeFileReqVO;
 import com.feiniao.airobot.model.vo.customerService.UploadChunkReqVO;
 import com.feiniao.airobot.model.vo.customerService.UpdateMarkdownFileReqVO;
 import com.feiniao.airobot.service.impl.CustomerServiceImpl;
@@ -30,9 +33,11 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.never;
@@ -151,6 +156,45 @@ class CustomerServiceImplTest {
         assertTrue(response.isSuccess());
         verify(chunkStorage, never()).saveChunk(any(), anyInt(), any());
         verify(chunkMapper, never()).insert(any(FileChunkInfoDO.class));
+    }
+
+    @Test
+    void mergeRejectsIncompleteChunkSetAndRestoresUploading() {
+        String md5 = "0123456789abcdef0123456789abcdef";
+        when(storageMapper.selectByMd5(md5)).thenReturn(uploadingStorage(md5));
+        when(storageMapper.update(any(), any())).thenReturn(1);
+        when(storageMapper.updateById(any(AiCustomerServiceFileStorageDO.class))).thenReturn(1);
+        when(chunkStorage.mergeChunks(md5, "guide.md", 2))
+                .thenThrow(new BizException(ResponseCodeEnum.CHUNK_INCOMPLETE));
+
+        BizException error = assertThrows(BizException.class,
+                () -> service.mergeFile(MergeFileReqVO.builder().fileMd5(md5).build()));
+
+        assertEquals(ResponseCodeEnum.CHUNK_INCOMPLETE.getErrorCode(), error.getErrorCode());
+        verify(storageMapper).update(any(), any());
+        verify(storageMapper).updateById(any(AiCustomerServiceFileStorageDO.class));
+        verify(eventPublisher, never()).publishEvent(any());
+    }
+
+    @Test
+    void successfulMergePublishesFileAndDeletesChunkRecords() {
+        String md5 = "0123456789abcdef0123456789abcdef";
+        Path finalPath = storageDirectory.resolve("merged-guide.md");
+        when(storageMapper.selectByMd5(md5)).thenReturn(uploadingStorage(md5));
+        when(storageMapper.update(any(), any())).thenReturn(1);
+        when(storageMapper.updateById(any(AiCustomerServiceFileStorageDO.class))).thenReturn(1);
+        when(chunkStorage.mergeChunks(md5, "guide.md", 2)).thenReturn(finalPath);
+
+        service.mergeFile(MergeFileReqVO.builder().fileMd5(md5).build());
+
+        verify(storageMapper).update(any(), any());
+        verify(storageMapper).updateById(any(AiCustomerServiceFileStorageDO.class));
+        verify(chunkMapper).deleteByFileMd5(md5);
+        verify(chunkStorage).deleteChunks(md5);
+        verify(eventPublisher).publishEvent(
+                argThat((AiCustomerServiceMdUploadedEvent event) ->
+                        event.getId().equals(41L)
+                                && event.getFilePath().equals(finalPath.toString())));
     }
 
     private UploadChunkReqVO uploadRequest(String md5, int chunkNumber) {

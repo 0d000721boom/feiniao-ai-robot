@@ -42,6 +42,11 @@ public interface CustomerService {
     Response<?> uploadChunk(UploadChunkReqVO request);
 
     /**
+     * 校验并合并完整文件。
+     */
+    Response<?> mergeFile(MergeFileReqVO request);
+
+    /**
      * 分页查询 Markdown 问答文件
      * @param findMarkdownFilePageListReqVO
      * @return

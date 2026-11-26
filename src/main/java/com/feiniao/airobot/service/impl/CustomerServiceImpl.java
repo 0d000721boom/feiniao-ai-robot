@@ -1,6 +1,8 @@
 package com.feiniao.airobot.service.impl;
 
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.feiniao.airobot.domain.dos.AiCustomerServiceFileStorageDO;
 import com.feiniao.airobot.domain.dos.FileChunkInfoDO;
 import com.feiniao.airobot.domain.mapper.AiCustomerServiceFileStorageMapper;
@@ -245,6 +247,122 @@ public class CustomerServiceImpl  implements CustomerService {
                         .updateTime(LocalDateTime.now())
                         .build());
         return Response.success();
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Response<?> mergeFile(MergeFileReqVO request) {
+        String fileMd5 = validateMergeRequest(request);
+        AiCustomerServiceFileStorageDO storage = aiCustomerServiceFileStorageMapper.selectByMd5(fileMd5);
+        if (storage == null) {
+            throw new BizException(ResponseCodeEnum.FILE_UPLOAD_RECORD_NOT_FOUND);
+        }
+
+        AiCustomerServiceFileStatusEnum status = AiCustomerServiceFileStatusEnum.codeOf(storage.getStatus());
+        if (Objects.equals(status, AiCustomerServiceFileStatusEnum.MERGING)) {
+            throw new BizException(ResponseCodeEnum.FILE_MERGE_IN_PROGRESS);
+        }
+        if (Objects.equals(status, AiCustomerServiceFileStatusEnum.PENDING)
+                || Objects.equals(status, AiCustomerServiceFileStatusEnum.VECTORIZING)
+                || Objects.equals(status, AiCustomerServiceFileStatusEnum.COMPLETED)
+                || Objects.equals(status, AiCustomerServiceFileStatusEnum.FAILED)) {
+            return Response.success();
+        }
+        if (!Objects.equals(status, AiCustomerServiceFileStatusEnum.UPLOADING)) {
+            throw new BizException(ResponseCodeEnum.FILE_UPLOAD_RECORD_NOT_FOUND);
+        }
+
+        int claimed = aiCustomerServiceFileStorageMapper.update(
+                null,
+                new UpdateWrapper<AiCustomerServiceFileStorageDO>()
+                        .eq("id", storage.getId())
+                        .eq("status", AiCustomerServiceFileStatusEnum.UPLOADING.getCode())
+                        .set("status", AiCustomerServiceFileStatusEnum.MERGING.getCode())
+                        .set("update_time", LocalDateTime.now()));
+        if (claimed != 1) {
+            throw new BizException(ResponseCodeEnum.FILE_MERGE_IN_PROGRESS);
+        }
+
+        Path finalPath = null;
+        try {
+            finalPath = chunkStorage.mergeChunks(
+                    fileMd5, storage.getFileName(), storage.getTotalChunks());
+            int updated = aiCustomerServiceFileStorageMapper.updateById(
+                    AiCustomerServiceFileStorageDO.builder()
+                            .id(storage.getId())
+                            .filePath(finalPath.toString())
+                            .fileSize(storage.getFileSize())
+                            .uploadedChunks(storage.getTotalChunks())
+                            .status(AiCustomerServiceFileStatusEnum.PENDING.getCode())
+                            .updateTime(LocalDateTime.now())
+                            .build());
+            if (updated != 1) {
+                throw new BizException(ResponseCodeEnum.UPLOAD_FILE_FAILED);
+            }
+
+            fileChunkInfoMapper.deleteByFileMd5(fileMd5);
+            chunkStorage.deleteChunks(fileMd5);
+            applicationEventPublisher.publishEvent(AiCustomerServiceMdUploadedEvent.builder()
+                    .id(storage.getId())
+                    .filePath(finalPath.toString())
+                    .metadatas(Map.of(
+                            "mdStorageId", storage.getId(),
+                            "fileMd5", fileMd5,
+                            "originalFileName", storage.getFileName()))
+                    .build());
+            return Response.success();
+        } catch (BizException e) {
+            cleanupFailedMerge(storage, fileMd5, finalPath, e);
+            throw e;
+        } catch (RuntimeException e) {
+            cleanupFailedMerge(storage, fileMd5, finalPath,
+                    new BizException(ResponseCodeEnum.UPLOAD_FILE_FAILED));
+            throw new BizException(ResponseCodeEnum.UPLOAD_FILE_FAILED);
+        }
+    }
+
+    private String validateMergeRequest(MergeFileReqVO request) {
+        if (request == null
+                || request.getFileMd5() == null
+                || !MD5_PATTERN.matcher(request.getFileMd5()).matches()) {
+            throw new BizException(ResponseCodeEnum.FILE_MD5_INVALID);
+        }
+        return request.getFileMd5().toLowerCase(Locale.ROOT);
+    }
+
+    private void cleanupFailedMerge(
+            AiCustomerServiceFileStorageDO storage,
+            String fileMd5,
+            Path finalPath,
+            BizException cause) {
+        if (finalPath != null) {
+            try {
+                chunkStorage.deleteFile(finalPath.toString());
+            } catch (RuntimeException ignored) {
+                log.warn("## 清理合并失败文件失败: {}", finalPath);
+            }
+        }
+
+        if (Objects.equals(cause.getErrorCode(), ResponseCodeEnum.FILE_MD5_MISMATCH.getErrorCode())) {
+            try {
+                fileChunkInfoMapper.deleteByFileMd5(fileMd5);
+                chunkStorage.deleteChunks(fileMd5);
+            } catch (RuntimeException cleanupError) {
+                log.warn("## 清理 MD5 校验失败的分片失败: {}", fileMd5, cleanupError);
+            }
+        }
+
+        aiCustomerServiceFileStorageMapper.updateById(
+                AiCustomerServiceFileStorageDO.builder()
+                        .id(storage.getId())
+                        .uploadedChunks(
+                                Objects.equals(cause.getErrorCode(),
+                                        ResponseCodeEnum.FILE_MD5_MISMATCH.getErrorCode())
+                                        ? 0
+                                        : storage.getUploadedChunks())
+                        .status(AiCustomerServiceFileStatusEnum.UPLOADING.getCode())
+                        .updateTime(LocalDateTime.now())
+                        .build());
     }
 
     private void validateUploadChunk(UploadChunkReqVO request) {

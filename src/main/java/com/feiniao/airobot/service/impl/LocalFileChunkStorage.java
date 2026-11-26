@@ -63,6 +63,21 @@ public class LocalFileChunkStorage {
         return chunkNumber >= 0 && Files.isRegularFile(chunkPath(fileMd5, chunkNumber));
     }
 
+    public Path getChunkPath(String fileMd5, int chunkNumber) {
+        validateMd5(fileMd5);
+        if (chunkNumber < 0) {
+            throw new BizException(ResponseCodeEnum.CHUNK_PARAM_INVALID);
+        }
+        return chunkPath(fileMd5, chunkNumber);
+    }
+
+    public void deleteChunk(String fileMd5, int chunkNumber) {
+        validateMd5(fileMd5);
+        if (chunkNumber >= 0) {
+            deleteIfExists(chunkPath(fileMd5, chunkNumber));
+        }
+    }
+
     public Path mergeChunks(String fileMd5, String originalFileName, int totalChunks) {
         validateMd5(fileMd5);
         if (totalChunks <= 0) {

@@ -1,14 +1,19 @@
 package com.feiniao.airobot.service;
 
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
-import com.feiniao.airobot.domain.dos.AiCustomerServiceMdStorageDO;
-import com.feiniao.airobot.domain.mapper.AiCustomerServiceMdStorageMapper;
+import com.feiniao.airobot.domain.dos.AiCustomerServiceFileStorageDO;
+import com.feiniao.airobot.domain.dos.FileChunkInfoDO;
+import com.feiniao.airobot.domain.mapper.AiCustomerServiceFileStorageMapper;
+import com.feiniao.airobot.domain.mapper.FileChunkInfoMapper;
+import com.feiniao.airobot.enums.AiCustomerServiceFileStatusEnum;
 import com.feiniao.airobot.event.AiCustomerServiceMdUploadedEvent;
 import com.feiniao.airobot.model.vo.chat.PageRspVO;
 import com.feiniao.airobot.model.vo.customerService.FindMarkdownFilePageListReqVO;
 import com.feiniao.airobot.model.vo.customerService.FindMarkdownFilePageListRspVO;
+import com.feiniao.airobot.model.vo.customerService.UploadChunkReqVO;
 import com.feiniao.airobot.model.vo.customerService.UpdateMarkdownFileReqVO;
 import com.feiniao.airobot.service.impl.CustomerServiceImpl;
+import com.feiniao.airobot.service.impl.LocalFileChunkStorage;
 import com.feiniao.airobot.utils.Response;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -19,7 +24,6 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.mock.web.MockMultipartFile;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import java.nio.file.Path;
 import java.time.LocalDateTime;
@@ -28,7 +32,10 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import org.junit.jupiter.api.io.TempDir;
@@ -37,13 +44,19 @@ import org.junit.jupiter.api.io.TempDir;
 class CustomerServiceImplTest {
 
     @Mock
-    private AiCustomerServiceMdStorageMapper storageMapper;
+    private AiCustomerServiceFileStorageMapper storageMapper;
 
     @Mock
     private VectorStore vectorStore;
 
     @Mock
     private ApplicationEventPublisher eventPublisher;
+
+    @Mock
+    private FileChunkInfoMapper chunkMapper;
+
+    @Mock
+    private LocalFileChunkStorage chunkStorage;
 
     @InjectMocks
     private CustomerServiceImpl service;
@@ -53,16 +66,16 @@ class CustomerServiceImplTest {
 
     @Test
     void findMarkdownFilePageListMapsStorageRecordsToResponse() {
-        AiCustomerServiceMdStorageDO storage = AiCustomerServiceMdStorageDO.builder()
+        AiCustomerServiceFileStorageDO storage = AiCustomerServiceFileStorageDO.builder()
                 .id(7L)
-                .originalFileName("faq.md")
+                .fileName("faq.md")
                 .fileSize(2048L)
                 .status(2)
                 .createTime(LocalDateTime.of(2026, 11, 21, 10, 0))
                 .updateTime(LocalDateTime.of(2026, 11, 21, 10, 1))
                 .remark("常见问题")
                 .build();
-        Page<AiCustomerServiceMdStorageDO> databasePage = new Page<>(2, 10);
+        Page<AiCustomerServiceFileStorageDO> databasePage = new Page<>(2, 10);
         databasePage.setTotal(21);
         databasePage.setRecords(List.of(storage));
         when(storageMapper.selectPageList(2L, 10L)).thenReturn(databasePage);
@@ -84,14 +97,14 @@ class CustomerServiceImplTest {
 
     @Test
     void updateMarkdownFileChangesRemarkForExistingRecord() {
-        AiCustomerServiceMdStorageDO storage = AiCustomerServiceMdStorageDO.builder()
+        AiCustomerServiceFileStorageDO storage = AiCustomerServiceFileStorageDO.builder()
                 .id(7L)
-                .originalFileName("faq.md")
+                .fileName("faq.md")
                 .build();
         when(storageMapper.selectById(7L)).thenReturn(storage);
-        when(storageMapper.updateById(any(AiCustomerServiceMdStorageDO.class))).thenReturn(1);
-        ArgumentCaptor<AiCustomerServiceMdStorageDO> captor =
-                ArgumentCaptor.forClass(AiCustomerServiceMdStorageDO.class);
+        when(storageMapper.updateById(any(AiCustomerServiceFileStorageDO.class))).thenReturn(1);
+        ArgumentCaptor<AiCustomerServiceFileStorageDO> captor =
+                ArgumentCaptor.forClass(AiCustomerServiceFileStorageDO.class);
 
         Response<?> response = service.updateMarkdownFile(
                 UpdateMarkdownFileReqVO.builder().id(7L).remark("更新后的备注").build());
@@ -102,44 +115,64 @@ class CustomerServiceImplTest {
     }
 
     @Test
-    void uploadMarkdownFilePublishesVectorizationEvent() {
-        ReflectionTestUtils.setField(service, "mdStoragePath", storageDirectory.toString());
-        MockMultipartFile file = new MockMultipartFile(
-                "file", "faq.md", "text/markdown", "# 常见问题".getBytes());
+    void firstChunkCreatesUploadingRecordAndStoresChunk() {
+        String md5 = "0123456789abcdef0123456789abcdef";
+        when(storageMapper.selectByMd5(md5)).thenReturn(null);
+        when(chunkMapper.selectByFileMd5AndChunkNumber(md5, 0)).thenReturn(null);
+        when(chunkMapper.insert(any(FileChunkInfoDO.class))).thenReturn(1);
+        when(chunkMapper.selectChunkedList(md5)).thenReturn(List.of(
+                FileChunkInfoDO.builder().fileMd5(md5).chunkNumber(0).build()));
+        when(chunkStorage.getChunkPath(md5, 0))
+                .thenReturn(storageDirectory.resolve("0.part"));
+        when(storageMapper.updateById(any(AiCustomerServiceFileStorageDO.class))).thenReturn(1);
         doAnswer(invocation -> {
-            AiCustomerServiceMdStorageDO storage = invocation.getArgument(0);
-            storage.setId(42L);
+            AiCustomerServiceFileStorageDO row = invocation.getArgument(0);
+            row.setId(41L);
             return 1;
-        }).when(storageMapper).insert(any(AiCustomerServiceMdStorageDO.class));
-        ArgumentCaptor<AiCustomerServiceMdUploadedEvent> eventCaptor =
-                ArgumentCaptor.forClass(AiCustomerServiceMdUploadedEvent.class);
+        }).when(storageMapper).insert(any(AiCustomerServiceFileStorageDO.class));
 
-        service.uploadMarkdownFile(file);
+        Response<?> response = service.uploadChunk(uploadRequest(md5, 0));
 
-        verify(eventPublisher).publishEvent(eventCaptor.capture());
-        assertEquals(42L, eventCaptor.getValue().getId());
-        assertEquals("faq.md", eventCaptor.getValue().getMetadatas().get("originalFileName"));
+        assertTrue(response.isSuccess());
+        verify(chunkStorage).saveChunk(eq(md5), eq(0), any(org.springframework.web.multipart.MultipartFile.class));
+        verify(chunkMapper).insert(any(FileChunkInfoDO.class));
     }
 
     @Test
-    void uploadMarkdownFileCannotEscapeConfiguredStorageDirectory() {
-        Path configuredDirectory = storageDirectory.resolve("knowledge");
-        ReflectionTestUtils.setField(service, "mdStoragePath", configuredDirectory.toString());
-        MockMultipartFile file = new MockMultipartFile(
-                "file", "../../../outside.md", "text/markdown", "# 越界文件".getBytes());
-        doAnswer(invocation -> {
-            AiCustomerServiceMdStorageDO storage = invocation.getArgument(0);
-            storage.setId(43L);
-            return 1;
-        }).when(storageMapper).insert(any(AiCustomerServiceMdStorageDO.class));
-        ArgumentCaptor<AiCustomerServiceMdUploadedEvent> eventCaptor =
-                ArgumentCaptor.forClass(AiCustomerServiceMdUploadedEvent.class);
+    void duplicateChunkUploadIsIdempotent() {
+        String md5 = "0123456789abcdef0123456789abcdef";
+        when(storageMapper.selectByMd5(md5)).thenReturn(uploadingStorage(md5));
+        when(chunkMapper.selectByFileMd5AndChunkNumber(md5, 0))
+                .thenReturn(FileChunkInfoDO.builder().chunkNumber(0).build());
+        when(chunkStorage.chunkExists(md5, 0)).thenReturn(true);
 
-        service.uploadMarkdownFile(file);
+        Response<?> response = service.uploadChunk(uploadRequest(md5, 0));
 
-        verify(eventPublisher).publishEvent(eventCaptor.capture());
-        Path storedPath = Path.of(eventCaptor.getValue().getFilePath()).toAbsolutePath().normalize();
-        assertTrue(storedPath.startsWith(configuredDirectory.toAbsolutePath().normalize()));
-        assertEquals("outside.md", eventCaptor.getValue().getMetadatas().get("originalFileName"));
+        assertTrue(response.isSuccess());
+        verify(chunkStorage, never()).saveChunk(any(), anyInt(), any());
+        verify(chunkMapper, never()).insert(any(FileChunkInfoDO.class));
+    }
+
+    private UploadChunkReqVO uploadRequest(String md5, int chunkNumber) {
+        return UploadChunkReqVO.builder()
+                .fileMd5(md5)
+                .fileName("guide.md")
+                .fileSize(5L * 1024 * 1024 + 1)
+                .chunkNumber(chunkNumber)
+                .totalChunks(2)
+                .chunk(new MockMultipartFile("file", "hello".getBytes()))
+                .build();
+    }
+
+    private AiCustomerServiceFileStorageDO uploadingStorage(String md5) {
+        return AiCustomerServiceFileStorageDO.builder()
+                .id(41L)
+                .fileMd5(md5)
+                .fileName("guide.md")
+                .fileSize(5L * 1024 * 1024 + 1)
+                .totalChunks(2)
+                .uploadedChunks(1)
+                .status(AiCustomerServiceFileStatusEnum.UPLOADING.getCode())
+                .build();
     }
 }

@@ -8,10 +8,12 @@ import org.aspectj.lang.annotation.Aspect;
 import org.aspectj.lang.annotation.Pointcut;
 import org.aspectj.lang.reflect.MethodSignature;
 import org.springframework.stereotype.Component;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.lang.reflect.Method;
 import java.util.Arrays;
-import java.util.function.Function;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
@@ -44,7 +46,9 @@ public class ApiOperationLogAspect {
         // 请求入参
         Object[] args = joinPoint.getArgs();
         // 入参转 JSON 字符串
-        String argsJsonStr = Arrays.stream(args).map(toJsonStr()).collect(Collectors.joining(", "));
+        String argsJsonStr = Arrays.stream(args)
+                .map(ApiOperationLogAspect::describeArgument)
+                .collect(Collectors.joining(", "));
 
         // 功能描述信息
         String description = getApiOperationLogDescription(joinPoint);
@@ -85,12 +89,16 @@ public class ApiOperationLogAspect {
         return apiOperationLog.description();
     }
 
-    /**
-     * 转 JSON 字符串
-     * @return
-     */
-    private Function<Object, String> toJsonStr() {
-        return JsonUtil::toJsonString;
+    static String describeArgument(Object argument) {
+        if (argument instanceof MultipartFile file) {
+            Map<String, Object> metadata = new LinkedHashMap<>();
+            metadata.put("partName", file.getName());
+            metadata.put("originalFilename", file.getOriginalFilename());
+            metadata.put("contentType", file.getContentType());
+            metadata.put("size", file.getSize());
+            return JsonUtil.toJsonString(metadata);
+        }
+        return JsonUtil.toJsonString(argument);
     }
 
 }

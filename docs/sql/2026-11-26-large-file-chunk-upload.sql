@@ -11,5 +11,5 @@ CREATE TABLE IF NOT EXISTS t_file_chunk_info (
 CREATE INDEX IF NOT EXISTS idx_file_chunk_file_md5
     ON t_file_chunk_info (file_md5);
 
-CREATE UNIQUE INDEX IF NOT EXISTS uk_file_storage_file_md5
+CREATE UNIQUE INDEX IF NOT EXISTS uk_file_md5
     ON t_ai_customer_service_file_storage (file_md5);
